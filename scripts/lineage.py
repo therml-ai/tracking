@@ -23,7 +23,7 @@ from matplotlib.lines import Line2D
 from track import segment
 from track import EventKind
 from track.graph import families, to_networkx, write_graphml
-from track.link import link
+from track.link import link_by_voxel_overlap
 from track.palette import colours
 
 EVENT_STYLE = {
@@ -67,7 +67,7 @@ def main() -> None:
     stop = args.stop if args.stop is not None else len(vapor)
     sel = list(range(args.start, stop))
 
-    tracks = link(
+    tracks = link_by_voxel_overlap(
         (segment(vapor[t], args.connectivity, args.min_size) for t in sel),
         min_overlap=args.min_overlap,
         max_distance=args.max_distance,

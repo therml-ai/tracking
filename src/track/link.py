@@ -42,13 +42,83 @@ class Event:
     children: tuple[int, ...]
 
 
+@dataclass(frozen=True)
+class Trajectory:
+    """One track's history: where it was and how big it was, frame by frame."""
+
+    track: int
+    frames: np.ndarray  # int, the frame indices where this track exists
+    centroid: np.ndarray  # float [n, ndim], in index space
+    volume: np.ndarray  # int [n], voxel counts
+
+    def __len__(self) -> int:
+        return int(self.frames.size)
+
+    @property
+    def velocity(self) -> np.ndarray:
+        """Centroid displacement per frame, ``[n - 1, ndim]``.
+
+        Only meaningful where ``frames`` is contiguous, which it is unless the
+        track vanished and reappeared.
+        """
+        return np.diff(self.centroid, axis=0)
+
+    @property
+    def growth(self) -> np.ndarray:
+        """Volume change per frame as a fraction, ``[n - 1]``."""
+        return np.diff(self.volume) / self.volume[:-1]
+
+
 @dataclass
 class Tracks:
-    """Per-frame label-to-track mapping plus the topology events."""
+    """Per-frame label-to-track mapping, region properties and events.
+
+    ``ids``, ``size`` and ``centroid`` share an indexing: entry ``[t][i]``
+    describes label ``i + 1`` of frame ``t``. Keeping the properties here
+    rather than only on the :class:`~track.segment.Frame` means a whole run
+    stays queryable without holding every label image in memory.
+    """
 
     ids: list[np.ndarray]  # ids[t][label - 1] -> track id
+    size: list[np.ndarray]  # voxel count per region
+    centroid: list[np.ndarray]  # [count, ndim] per frame
     events: list[Event]
     n_tracks: int
+
+    def trajectory(self, track_id: int) -> Trajectory:
+        """Centroid and volume history of one track."""
+        frames, cents, vols = [], [], []
+        for t, row in enumerate(self.ids):
+            hit = np.flatnonzero(row == track_id)
+            if hit.size:
+                i = int(hit[0])
+                frames.append(t)
+                cents.append(self.centroid[t][i])
+                vols.append(self.size[t][i])
+        if not frames:
+            raise KeyError(f"no track {track_id}")
+        return Trajectory(
+            track_id,
+            np.array(frames),
+            np.array(cents),
+            np.array(vols, dtype=np.int64),
+        )
+
+    def trajectories(self) -> dict[int, Trajectory]:
+        """Every track's history, in a single pass over the frames."""
+        acc: dict[int, tuple[list, list, list]] = {}
+        for t, row in enumerate(self.ids):
+            for i, tid in enumerate(row.tolist()):
+                frames, cents, vols = acc.setdefault(tid, ([], [], []))
+                frames.append(t)
+                cents.append(self.centroid[t][i])
+                vols.append(self.size[t][i])
+        return {
+            tid: Trajectory(
+                tid, np.array(f), np.array(c), np.array(v, dtype=np.int64)
+            )
+            for tid, (f, c, v) in acc.items()
+        }
 
     def of_kind(self, kind: EventKind) -> list[Event]:
         return [e for e in self.events if e.kind == kind]
@@ -115,34 +185,29 @@ def _groups(adj: np.ndarray, n1: int, n2: int) -> Iterator[tuple[np.ndarray, np.
         yield nodes[nodes < n1], nodes[nodes >= n1] - n1
 
 
-def link(
+def link_by_voxel_overlap(
     frames: Iterable[Frame],
     min_overlap: float = 0.5,
     criterion: Criterion = Criterion.CONTAINMENT,
     max_distance: float = 0.0,
 ) -> Tracks:
-    """Link labelled frames into tracks by voxel overlap.
+    """Link labelled frames into tracks by voxel overlap. This assumes frames are
+    close enough in time for bubbles to overlap themselves.
 
-    A parent and child are candidates when their overlap ``criterion``
-    reaches ``min_overlap``; each connected component of the resulting
-    bipartite graph becomes one event. Identity follows the largest region:
-    through a merge the child inherits the biggest parent's id, through a
-    split the biggest child keeps it, and every other child starts a new
-    track. This is a baseline -- it assumes frames are close enough in time
-    that bubbles overlap themselves, which holds for simulation output but
-    not for sparsely sampled data.
-
-    ``max_distance`` adds a second pass that matches whatever overlap left
-    unpaired by centroid proximity, which is what keeps small fast-moving
-    bubbles on one track. Set it to 0 to use overlap alone. Choose it from
-    the data: a little above the per-frame displacement of a typical bubble.
+    - A parent and child are candidates when their overlap ``criterion`` reaches ``min_overlap``.
+    - IDs follow the largest region: in a merge the child inherits the biggest parent's ID,
+      through a split the biggest child keeps the ID, and the other children get new IDs.
+    - ``max_distance`` adds a second pass that matches whatever overlap left
+      unpaired by centroid proximity. This may be needed for small, fast bubbles.
     """
     stream = iter(frames)
     prev = next(stream, None)
     if prev is None:
-        return Tracks([], [], 0)
+        return Tracks([], [], [], [], 0)
 
     ids = [np.arange(1, prev.count + 1, dtype=np.int64)]
+    sizes = [prev.size]
+    cents = [prev.centroid]
     next_id = prev.count + 1
     events: list[Event] = []
 
@@ -162,18 +227,20 @@ def link(
             if prows.size == 0:
                 kind = EventKind.START
                 heir = -1  # nothing to inherit from
+            elif prows.size == 1 and ccols.size == 1:
+                # the one case where identity carries over
+                kind = EventKind.CONTINUE
+                heir = int(ccols[0])
+                cur_ids[heir] = ids[t][prows[0]]
             else:
                 kind = (
-                    EventKind.CONTINUE
-                    if prows.size == 1 and ccols.size == 1
-                    else EventKind.SPLIT
+                    EventKind.SPLIT
                     if prows.size == 1
                     else EventKind.MERGE
                     if ccols.size == 1
                     else EventKind.COMPLEX
                 )
-                heir = int(ccols[np.argmax(cur.size[ccols])])
-                cur_ids[heir] = ids[t][prows[np.argmax(prev.size[prows])]]
+                heir = -1  # every product of a topology change is a new bubble
 
             for c in ccols:
                 if int(c) != heir:
@@ -185,9 +252,11 @@ def link(
             )
 
         ids.append(cur_ids)
+        sizes.append(cur.size)
+        cents.append(cur.centroid)
         prev = cur
 
-    return Tracks(ids, events, next_id - 1)
+    return Tracks(ids, sizes, cents, events, next_id - 1)
 
 
 def track(
@@ -203,7 +272,7 @@ def track(
     ``masks`` is consumed lazily, so only two frames are labelled at a time.
     """
     frames = (segment(m, connectivity, min_size) for m in masks)
-    return link(
+    return link_by_voxel_overlap(
         frames,
         min_overlap=min_overlap,
         criterion=criterion,

@@ -1,20 +1,33 @@
 """Algorithms for tracking bubbles in two-phase simulations."""
 
-from .link import Event, EventKind, Tracks, link, track
+from .audit import Violation, volume_consistency, volume_ratios
+from .link import (
+    Event,
+    EventKind,
+    Trajectory,
+    Tracks,
+    link_by_voxel_overlap,
+    track,
+)
 from .overlap import Criterion, containment, intersection, iou, score
-from .segment import Frame, segment
+from .segment import Frame, segment, touches_wall
 
 __all__ = [
     "Criterion",
     "Event",
     "EventKind",
     "Frame",
+    "Trajectory",
     "Tracks",
+    "Violation",
     "containment",
     "intersection",
     "iou",
-    "link",
+    "link_by_voxel_overlap",
     "score",
     "segment",
+    "touches_wall",
     "track",
+    "volume_consistency",
+    "volume_ratios",
 ]

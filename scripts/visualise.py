@@ -19,8 +19,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 
-from track import Criterion, segment
-from track.link import link
+from track import Criterion, segment, volume_consistency
+from track.link import link_by_voxel_overlap
 from track.graph import LINEAGE_KINDS
 from track.palette import colours as id_colours
 
@@ -82,6 +82,23 @@ def main() -> None:
                         "keeps small fast bubbles on one track; 0 disables it")
     p.add_argument("--label-min-size", type=int, default=150,
                    help="annotate ids on regions at least this large (0 disables)")
+    p.add_argument("--audit", action=argparse.BooleanOptionalAction, default=True,
+                   help="ring bubbles whose volume bookkeeping fails; needs all "
+                        "frames resident, so watch memory on long spans")
+    p.add_argument("--audit-detached-only", action=argparse.BooleanOptionalAction,
+                   default=True, help="only check bubbles clear of the heater")
+    p.add_argument("--audit-lower", type=float, default=0.95)
+    p.add_argument("--audit-upper", type=float, default=1.15)
+    p.add_argument("--audit-sigmas", type=float, default=3.0,
+                   help="how many sigma of interface-discretisation slack to "
+                        "allow on top of the physical band; 0 for a hard band")
+    p.add_argument("--audit-min-volume", type=int, default=25,
+                   help="skip events on bubbles too small to measure; below "
+                        "~25 voxels the ratio is quantisation noise")
+    p.add_argument("--wall-axis", type=int, default=0)
+    p.add_argument("--wall-side", type=int, default=0)
+    p.add_argument("--flag-hold", type=int, default=6,
+                   help="frames to keep a flagged bubble ringed, so it is visible")
     args = p.parse_args()
 
     vapor = load(args.input, tuple(args.shape) if args.shape else None)
@@ -93,9 +110,35 @@ def main() -> None:
         for t in indices:
             yield segment(vapor[t], args.connectivity, args.min_size)
 
-    tracks = link(frames_of(sel), min_overlap=args.min_overlap,
-                  criterion=args.criterion, max_distance=args.max_distance)
+    # the audit needs every frame at once; when it is off, stay streaming
+    frames = list(frames_of(sel)) if args.audit else None
+    tracks = link_by_voxel_overlap(
+        frames if frames is not None else frames_of(sel),
+        min_overlap=args.min_overlap,
+        criterion=args.criterion,
+        max_distance=args.max_distance,
+    )
     print(f"{tracks.n_tracks} tracks; rendering to {args.out}")
+
+    flagged: dict[int, set[int]] = {}
+    alerts: dict[int, list[str]] = {}
+    if frames is not None:
+        bad = volume_consistency(
+            tracks, frames,
+            lower=args.audit_lower, upper=args.audit_upper,
+            min_volume=args.audit_min_volume, sigmas=args.audit_sigmas,
+            detached_only=args.audit_detached_only,
+            wall_axis=args.wall_axis, wall_side=args.wall_side,
+        )
+        print(f"{len(bad)} volume violations")
+        for v in bad:
+            print(f"  {v}")
+            involved = set(v.parents) | set(v.children)
+            for k in range(v.time, min(v.time + args.flag_hold, len(sel))):
+                flagged.setdefault(k, set()).update(involved)
+                alerts.setdefault(k, []).append(
+                    f"!! {v.kind} {v.check} {v.ratio:.2f}"
+                )
 
     # events keyed by the frame they land in, for the on-screen annotation
     notes: dict[int, list[str]] = {}
@@ -122,16 +165,36 @@ def main() -> None:
                      fontsize=9, family="monospace")
     note = ax1.text(0.02, 0.97, "", transform=ax1.transAxes, va="top", color="w",
                     fontsize=8, family="monospace")
+    alert = ax1.text(0.02, 0.03, "", transform=ax1.transAxes, va="bottom",
+                     color="#ff2d55", fontsize=9, family="monospace",
+                     fontweight="bold")
     texts: list[plt.Text] = []
+    rings: list = []
 
     def draw(i: int):
         t = sel[i]
-        f = segment(vapor[t], args.connectivity, args.min_size)
+        f = frames[i] if frames is not None else segment(
+            vapor[t], args.connectivity, args.min_size
+        )
         ids = tracks.ids[i]
         im0.set_data(vapor[t])
         im1.set_data(id_colours(tracks.relabel(ids, f.labels)))
         stamp.set_text(f"frame {t:>5d}\nbubbles {f.count:>3d}")
         note.set_text("\n".join(notes.get(i, [])[:4]))
+        alert.set_text("\n".join(dict.fromkeys(alerts.get(i, [])))[:120])
+
+        while rings:
+            rings.pop().remove()
+        if i in flagged:
+            lut = np.zeros(len(ids) + 1, dtype=bool)
+            lut[1:] = np.isin(ids, list(flagged[i]))
+            hot = lut[f.labels]
+            if hot.any():
+                for ax in (ax0, ax1):
+                    rings.append(
+                        ax.contour(hot, levels=[0.5], colors="#ff2d55",
+                                   linewidths=1.8)
+                    )
 
         while texts:
             texts.pop().remove()
@@ -141,7 +204,7 @@ def main() -> None:
                 y, x = f.centroid[lab][:2]
                 texts.append(ax1.text(x, y, str(int(ids[lab])), color="k", fontsize=7,
                                       ha="center", va="center", fontweight="bold"))
-        return [im0, im1, stamp, note, *texts]
+        return [im0, im1, stamp, note, alert, *texts]
 
     anim = FuncAnimation(fig, draw, frames=len(sel), blit=False)
     writer, out = pick_writer(args.out, args.fps)

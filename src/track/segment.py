@@ -59,3 +59,19 @@ def segment(mask, connectivity=1, min_size=0) -> Frame:
         centroid = np.empty((0, mask.ndim))
 
     return Frame(labels.astype(np.int32), count, size.astype(np.int64), centroid)
+
+
+def touches_wall(frame: Frame, axis: int = 0, side: int = 0) -> np.ndarray:
+    """Which regions touch a domain boundary, as a bool array of ``count``.
+
+    Defaults to the low face of axis 0, which is the heater in a boiling
+    domain laid out ``[(Z,) Y, X]`` with the wall at ``Y = 0``. A bubble
+    touching it is still attached to the nucleation site and being fed
+    vapor, so it is not conserving volume.
+    """
+    face = np.take(frame.labels, side, axis=axis)
+    hit = np.unique(face)
+    attached = np.zeros(frame.count, dtype=bool)
+    hit = hit[hit > 0]
+    attached[hit - 1] = True
+    return attached

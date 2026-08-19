@@ -31,9 +31,10 @@ def to_networkx(tracks: Tracks):
     sequence that was linked). Edges carry ``kind`` and ``time``, and run from
     a parent track to a child track.
 
-    Identity-preserving links leave no edge: through a merge the largest
-    parent keeps its id, so only the *absorbed* parents get an edge to it, and
-    a track that merely continues stays a single node.
+    Every parent of a coalescence or breakup gets an edge to every product,
+    because no id survives a topology change. A track that merely continues
+    stays a single node with no edge. Since ids are only ever minted fresh,
+    edges always run forward in time and the graph is acyclic.
     """
     nx = _networkx()
     graph = nx.DiGraph()
@@ -44,8 +45,7 @@ def to_networkx(tracks: Tracks):
             continue
         for parent in event.parents:
             for child in event.children:
-                if parent != child:  # the heir keeps its id; that is not an edge
-                    graph.add_edge(parent, child, kind=event.kind, time=event.time)
+                graph.add_edge(parent, child, kind=event.kind, time=event.time)
     return graph
 
 
