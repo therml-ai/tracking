@@ -25,6 +25,10 @@ from track.graph import LINEAGE_KINDS
 from track.palette import colours as id_colours
 
 
+MIN_SIDE = 3.0  # inches; below this, titles and annotations stop being legible
+MAX_SIDE = 40.0
+
+
 def ffmpeg_works() -> bool:
     """matplotlib only checks that the binary exists; a broken Homebrew ffmpeg
     (missing codec dylibs) passes that check and then dies mid-encode."""
@@ -97,6 +101,11 @@ def main() -> None:
                         "~25 voxels the ratio is quantisation noise")
     p.add_argument("--wall-axis", type=int, default=0)
     p.add_argument("--wall-side", type=int, default=0)
+    p.add_argument("--layout", choices=["auto", "rows", "columns"], default="auto",
+                   help="stack the two panels vertically (rows) or side by side "
+                        "(columns); auto picks whichever keeps the figure closer "
+                        "to square, so wide domains stack")
+    p.add_argument("--fig-width", type=float, default=12.0)
     p.add_argument("--flag-hold", type=int, default=6,
                    help="frames to keep a flagged bubble ringed, so it is visible")
     args = p.parse_args()
@@ -149,7 +158,26 @@ def main() -> None:
                 f" -> {'+'.join(map(str, e.children))}"
             )
 
-    fig, (ax0, ax1) = plt.subplots(1, 2, figsize=(11, 5.6), constrained_layout=True)
+    # a panel is as wide as the domain; two of them side by side make a figure
+    # of aspect 2a, stacked they make a/2. Stacking wins once a > 1, nudged up
+    # a little so square data keeps the familiar side-by-side.
+    panel = vapor.shape[2] / vapor.shape[1]
+    stacked = args.layout == "rows" or (args.layout == "auto" and panel > 1.2)
+    grid = (2, 1) if stacked else (1, 2)
+    combined = panel / 2 if stacked else panel * 2
+    width, height = args.fig_width, args.fig_width / combined
+    if height < MIN_SIDE:
+        # very wide data: grow the figure sideways rather than letterbox it
+        width = min(MIN_SIDE * combined, MAX_SIDE)
+        height = width / combined
+    height = min(height, MAX_SIDE)
+    fig, (ax0, ax1) = plt.subplots(
+        *grid, figsize=(width, height), constrained_layout=True
+    )
+    print(
+        f"panel aspect {panel:.2f} -> {'stacked' if stacked else 'side by side'}"
+        f", figure {width:.1f}x{height:.1f} in"
+    )
     for ax in (ax0, ax1):
         ax.set_xticks([])
         ax.set_yticks([])
