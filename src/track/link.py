@@ -10,7 +10,7 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
 from .overlap import Criterion, score
-from .segment import Frame, segment
+from .segment import Frame, minimum_image, segment
 
 class EventKind(StrEnum):
     """What happened to a bubble between one frame and the next.
@@ -50,6 +50,8 @@ class Trajectory:
     frames: np.ndarray  # int, the frame indices where this track exists
     centroid: np.ndarray  # float [n, ndim], in index space
     volume: np.ndarray  # int [n], voxel counts
+    shape: tuple[int, ...] = ()
+    periodic: tuple[bool, ...] = ()
 
     def __len__(self) -> int:
         return int(self.frames.size)
@@ -58,10 +60,17 @@ class Trajectory:
     def velocity(self) -> np.ndarray:
         """Centroid displacement per frame, ``[n - 1, ndim]``.
 
+        Displacements across a periodic face are wrapped to the short way
+        round, so a bubble leaving one side and re-entering the other reads
+        as a small step rather than the width of the domain.
+
         Only meaningful where ``frames`` is contiguous, which it is unless the
         track vanished and reappeared.
         """
-        return np.diff(self.centroid, axis=0)
+        delta = np.diff(self.centroid, axis=0)
+        if any(self.periodic):
+            return minimum_image(delta, self.shape, self.periodic)
+        return delta
 
     @property
     def growth(self) -> np.ndarray:
@@ -84,6 +93,8 @@ class Tracks:
     centroid: list[np.ndarray]  # [count, ndim] per frame
     events: list[Event]
     n_tracks: int
+    shape: tuple[int, ...] = ()  # spatial shape of a frame
+    periodic: tuple[bool, ...] = ()  # per axis, carried from the frames
 
     def trajectory(self, track_id: int) -> Trajectory:
         """Centroid and volume history of one track."""
@@ -102,6 +113,8 @@ class Tracks:
             np.array(frames),
             np.array(cents),
             np.array(vols, dtype=np.int64),
+            self.shape,
+            self.periodic,
         )
 
     def trajectories(self) -> dict[int, Trajectory]:
@@ -115,7 +128,12 @@ class Tracks:
                 vols.append(self.size[t][i])
         return {
             tid: Trajectory(
-                tid, np.array(f), np.array(c), np.array(v, dtype=np.int64)
+                tid,
+                np.array(f),
+                np.array(c),
+                np.array(v, dtype=np.int64),
+                self.shape,
+                self.periodic,
             )
             for tid, (f, c, v) in acc.items()
         }
@@ -159,9 +177,10 @@ def _augment_by_distance(
     if free_a.size == 0 or free_b.size == 0:
         return adj
 
-    dist = np.linalg.norm(
-        a.centroid[free_a][:, None, :] - b.centroid[free_b][None, :, :], axis=-1
-    )
+    delta = a.centroid[free_a][:, None, :] - b.centroid[free_b][None, :, :]
+    if any(a.wraps):
+        delta = minimum_image(delta, a.shape, a.wraps)
+    dist = np.linalg.norm(delta, axis=-1)
     # linear_sum_assignment needs a feasible matrix, so gate with a large
     # finite cost and discard over-gate pairs after solving
     barrier = max_distance * 1e3 + 1.0
@@ -205,6 +224,7 @@ def link_by_voxel_overlap(
     if prev is None:
         return Tracks([], [], [], [], 0)
 
+    first = prev
     ids = [np.arange(1, prev.count + 1, dtype=np.int64)]
     sizes = [prev.size]
     cents = [prev.centroid]
@@ -256,7 +276,9 @@ def link_by_voxel_overlap(
         cents.append(cur.centroid)
         prev = cur
 
-    return Tracks(ids, sizes, cents, events, next_id - 1)
+    return Tracks(
+        ids, sizes, cents, events, next_id - 1, first.shape, first.wraps
+    )
 
 
 def track(
@@ -266,12 +288,13 @@ def track(
     min_overlap: float = 0.5,
     criterion: Criterion = Criterion.CONTAINMENT,
     max_distance: float = 0.0,
+    periodic=None,
 ) -> Tracks:
     """Segment and link a sequence of phase masks (True = vapor).
 
     ``masks`` is consumed lazily, so only two frames are labelled at a time.
     """
-    frames = (segment(m, connectivity, min_size) for m in masks)
+    frames = (segment(m, connectivity, min_size, periodic) for m in masks)
     return link_by_voxel_overlap(
         frames,
         min_overlap=min_overlap,

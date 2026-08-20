@@ -62,6 +62,20 @@ def load(path: str, shape: tuple[int, ...] | None) -> np.ndarray:
     return raw.astype(bool)
 
 
+def periodic_flags(ndim: int, left_right: bool, top_bottom: bool) -> tuple[bool, ...]:
+    """Map the two named boundaries onto per-axis flags.
+
+    Data is laid out ``[(Z,) Y, X]``, so left-right is the last axis and
+    top-bottom the one before it.
+    """
+    flags = [False] * ndim
+    if left_right:
+        flags[-1] = True
+    if top_bottom:
+        flags[-2] = True
+    return tuple(flags)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input")
@@ -78,6 +92,10 @@ def main() -> None:
     p.add_argument("--min-size", type=int, default=4,
                    help="drop regions below this many pixels; keep it small -- "
                         "this discards bubbles outright rather than merging them")
+    p.add_argument("--left-right-periodic", action="store_true",
+                   help="the domain wraps in X; bubbles crossing it stay one bubble")
+    p.add_argument("--top-bottom-periodic", action="store_true",
+                   help="the domain wraps in Y")
     p.add_argument("--min-overlap", type=float, default=0.25)
     p.add_argument("--criterion", type=Criterion, choices=list(Criterion),
                    default=Criterion.CONTAINMENT)
@@ -111,13 +129,16 @@ def main() -> None:
     args = p.parse_args()
 
     vapor = load(args.input, tuple(args.shape) if args.shape else None)
+    wraps = periodic_flags(
+        vapor.ndim - 1, args.left_right_periodic, args.top_bottom_periodic
+    )
     sel = range(args.start, args.stop if args.stop is not None else len(vapor), args.stride)
     sel = list(sel)
     print(f"loaded {vapor.shape}, animating {len(sel)} frames")
 
     def frames_of(indices):
         for t in indices:
-            yield segment(vapor[t], args.connectivity, args.min_size)
+            yield segment(vapor[t], args.connectivity, args.min_size, wraps)
 
     # the audit needs every frame at once; when it is off, stay streaming
     frames = list(frames_of(sel)) if args.audit else None
@@ -202,7 +223,7 @@ def main() -> None:
     def draw(i: int):
         t = sel[i]
         f = frames[i] if frames is not None else segment(
-            vapor[t], args.connectivity, args.min_size
+            vapor[t], args.connectivity, args.min_size, wraps
         )
         ids = tracks.ids[i]
         im0.set_data(vapor[t])

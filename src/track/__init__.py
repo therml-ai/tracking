@@ -10,7 +10,7 @@ from .link import (
     track,
 )
 from .overlap import Criterion, containment, intersection, iou, score
-from .segment import Frame, segment, touches_wall
+from .segment import Frame, minimum_image, segment, touches_wall
 
 __all__ = [
     "Criterion",
@@ -24,6 +24,7 @@ __all__ = [
     "intersection",
     "iou",
     "link_by_voxel_overlap",
+    "minimum_image",
     "score",
     "segment",
     "touches_wall",

@@ -1,7 +1,15 @@
 import numpy as np
 import pytest
 
-from track import Criterion, EventKind, intersection, link_by_voxel_overlap, segment, track
+from track import (
+    Criterion,
+    EventKind,
+    intersection,
+    link_by_voxel_overlap,
+    segment,
+    touches_wall,
+    track,
+)
 
 
 def disc(shape, center, radius):
@@ -433,8 +441,6 @@ def test_volume_ratios_reports_the_continue_control():
 
 
 def test_touches_wall_finds_regions_on_the_heater():
-    from track import touches_wall
-
     m = np.zeros((20, 20), bool)
     m[0:3, 2:5] = True  # sitting on the Y=0 wall
     m[10:13, 10:13] = True  # detached
@@ -613,3 +619,133 @@ def test_trajectory_is_consistent_with_lifetimes():
     for tid, (first, last) in tr.lifetimes().items():
         tj = tr.trajectory(tid)
         assert tj.frames[0] == first and tj.frames[-1] == last
+
+
+# --- periodic boundaries ---------------------------------------------------
+
+
+def band(shape, rows, cols):
+    m = np.zeros(shape, bool)
+    for r in rows:
+        for c in cols:
+            m[r % shape[0], c % shape[1]] = True
+    return m
+
+
+def test_left_right_wrap_fuses_one_bubble():
+    m = band((20, 20), range(8, 12), [-2, -1, 0, 1])
+    assert segment(m).count == 2  # a box sees two pieces
+    f = segment(m, periodic=(False, True))
+    assert f.count == 1
+    assert f.size.tolist() == [16]
+
+
+def test_top_bottom_wrap_fuses_one_bubble():
+    m = band((20, 20), [-2, -1, 0, 1], range(8, 12))
+    assert segment(m).count == 2
+    assert segment(m, periodic=(True, False)).count == 1
+    assert segment(m, periodic=(False, True)).count == 2  # wrong axis
+
+
+def test_corner_bubble_wraps_on_both_axes():
+    m = band((20, 20), [-1, 0], [-1, 0])
+    assert segment(m).count == 4  # one blob per corner
+    assert segment(m, periodic=True).count == 1
+
+
+def test_periodic_centroid_uses_a_circular_mean():
+    f = segment(band((6, 20), [2, 3], [-2, -1, 0, 1]), periodic=(False, True))
+    # spans x = 18,19,0,1, so the centre is 19.5, not the domain midpoint
+    assert f.centroid[0, 1] == pytest.approx(19.5)
+    assert f.centroid[0, 0] == pytest.approx(2.5)  # untouched non-periodic axis
+
+
+def test_periodic_centroid_matches_plain_mean_away_from_the_edge():
+    m = band((20, 20), range(8, 12), range(8, 12))
+    assert np.allclose(
+        segment(m, periodic=True).centroid, segment(m).centroid
+    )
+
+
+def test_bubble_keeps_its_id_crossing_a_periodic_boundary():
+    """The whole point: identity survives the wrap."""
+    masks = [band((20, 20), range(8, 12), range(c, c + 4)) for c in range(14, 22)]
+    plain = track(masks, min_overlap=0.25, max_distance=6.0)
+    wrapped = track(masks, min_overlap=0.25, max_distance=6.0, periodic=(False, True))
+    assert plain.n_tracks > 1  # a box loses it at the edge
+    assert wrapped.n_tracks == 1
+    assert all(row.tolist() == [1] for row in wrapped.ids)
+
+
+def test_distance_stage_measures_the_short_way_round():
+    """Two frames far apart in index space but adjacent across the wrap."""
+    masks = [band((20, 20), [10], [19]), band((20, 20), [10], [0])]
+    assert track(masks, min_overlap=0.99, max_distance=3.0).n_tracks == 2
+    assert (
+        track(
+            masks, min_overlap=0.99, max_distance=3.0, periodic=(False, True)
+        ).n_tracks
+        == 1
+    )
+
+
+def test_velocity_wraps_instead_of_jumping_the_domain():
+    masks = [band((20, 20), range(9, 11), range(c, c + 2)) for c in range(17, 22)]
+    tj = track(
+        masks, min_overlap=0.25, max_distance=6.0, periodic=(False, True)
+    ).trajectory(1)
+    vel = tj.velocity
+    assert np.allclose(vel[:, 1], 1.0)  # steady 1 px/frame, no 19 px spike
+    assert np.abs(vel).max() < 2
+
+
+def test_minimum_image_wraps_only_periodic_axes():
+    from track import minimum_image
+
+    delta = np.array([[9.0, 9.0]])
+    out = minimum_image(delta, (10, 10), (True, False))
+    assert out[0, 0] == pytest.approx(-1.0)
+    assert out[0, 1] == pytest.approx(9.0)
+
+
+def test_touches_wall_refuses_a_periodic_axis():
+    f = segment(np.ones((10, 10), bool), periodic=(False, True))
+    assert touches_wall(f, axis=0).tolist() == [True]
+    with pytest.raises(ValueError, match="axis 1 is periodic"):
+        touches_wall(f, axis=1)
+
+
+def test_periodic_flag_count_is_validated():
+    from track.segment import as_periodic
+
+    assert as_periodic(None, 2) == (False, False)
+    assert as_periodic(True, 3) == (True, True, True)
+    with pytest.raises(ValueError, match="periodic has 3 flags but data is 2D"):
+        as_periodic((True, False, True), 2)
+
+
+def test_wrap_respects_connectivity():
+    """A corner-only contact across the wrap needs diagonal connectivity."""
+    m = np.zeros((10, 10), bool)
+    m[4, 0] = True
+    m[5, 9] = True  # touches the first only diagonally, across the wrap
+    assert segment(m, connectivity=1, periodic=(False, True)).count == 2
+    assert segment(m, connectivity=2, periodic=(False, True)).count == 1
+
+
+def test_periodic_is_recorded_on_frames_and_tracks():
+    masks = [band((20, 20), range(8, 12), range(8, 12))] * 2
+    tr = track(masks, periodic=(False, True))
+    assert tr.periodic == (False, True)
+    assert tr.shape == (20, 20)
+    assert tr.trajectory(1).periodic == (False, True)
+
+
+def test_non_periodic_results_are_unchanged():
+    """Regression: the default path must be byte-identical to before."""
+    shape = (40, 60)
+    masks = [disc(shape, (20, 20 + t), 6) for t in range(6)]
+    a = track(masks, min_overlap=0.25, max_distance=8.0)
+    b = track(masks, min_overlap=0.25, max_distance=8.0, periodic=(False, False))
+    assert a.n_tracks == b.n_tracks == 1
+    assert [i.tolist() for i in a.ids] == [i.tolist() for i in b.ids]

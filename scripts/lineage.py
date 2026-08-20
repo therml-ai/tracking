@@ -45,6 +45,20 @@ def load(path, shape):
     return raw.astype(bool)
 
 
+def periodic_flags(ndim: int, left_right: bool, top_bottom: bool) -> tuple[bool, ...]:
+    """Map the two named boundaries onto per-axis flags.
+
+    Data is laid out ``[(Z,) Y, X]``, so left-right is the last axis and
+    top-bottom the one before it.
+    """
+    flags = [False] * ndim
+    if left_right:
+        flags[-1] = True
+    if top_bottom:
+        flags[-2] = True
+    return tuple(flags)
+
+
 def main() -> None:
     p = argparse.ArgumentParser(description=__doc__)
     p.add_argument("input")
@@ -54,6 +68,10 @@ def main() -> None:
     p.add_argument("--out", default="lineage.png")
     p.add_argument("--connectivity", type=int, default=1)
     p.add_argument("--min-size", type=int, default=4)
+    p.add_argument("--left-right-periodic", action="store_true",
+                   help="the domain wraps in X; bubbles crossing it stay one bubble")
+    p.add_argument("--top-bottom-periodic", action="store_true",
+                   help="the domain wraps in Y")
     p.add_argument("--min-overlap", type=float, default=0.25)
     p.add_argument("--max-distance", type=float, default=8.0)
     p.add_argument("--min-duration", type=int, default=3,
@@ -64,11 +82,14 @@ def main() -> None:
     args = p.parse_args()
 
     vapor = load(args.input, tuple(args.shape) if args.shape else None)
+    wraps = periodic_flags(
+        vapor.ndim - 1, args.left_right_periodic, args.top_bottom_periodic
+    )
     stop = args.stop if args.stop is not None else len(vapor)
     sel = list(range(args.start, stop))
 
     tracks = link_by_voxel_overlap(
-        (segment(vapor[t], args.connectivity, args.min_size) for t in sel),
+        (segment(vapor[t], args.connectivity, args.min_size, wraps) for t in sel),
         min_overlap=args.min_overlap,
         max_distance=args.max_distance,
     )
