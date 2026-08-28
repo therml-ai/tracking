@@ -20,10 +20,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from track import Connectivity, segment
-from track import Connectivity, EventKind
+from track import Connectivity, EventKind, track
 from track.graph import families, to_networkx, write_graphml
-from track.link import link_by_voxel_overlap
 from track.palette import colours
 
 EVENT_STYLE = {
@@ -87,10 +85,13 @@ def main() -> None:
         vapor.ndim - 1, args.left_right_periodic, args.top_bottom_periodic
     )
     stop = args.stop if args.stop is not None else len(vapor)
-    sel = list(range(args.start, stop))
+    time_range = list(range(args.start, stop))
 
-    tracks = link_by_voxel_overlap(
-        (segment(vapor[t], args.connectivity, args.min_size, wraps) for t in sel),
+    tracks = track(
+        vapor[time_range],
+        connectivity=args.connectivity,
+        min_size=args.min_size,
+        periodic=wraps,
         min_overlap=args.min_overlap,
         max_distance=args.max_distance,
     )

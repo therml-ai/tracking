@@ -62,6 +62,17 @@ def load(path: str, shape: tuple[int, ...] | None) -> np.ndarray:
     return raw.astype(bool)
 
 
+def _stream(masks, args, chunk: int = 64):
+    """Segment in chunks, so a long animation never holds every label image."""
+    wraps = periodic_flags(
+        masks.ndim - 1, args.left_right_periodic, args.top_bottom_periodic
+    )
+    for start in range(0, len(masks), chunk):
+        yield from segment(
+            masks[start : start + chunk], args.connectivity, args.min_size, wraps
+        )
+
+
 def periodic_flags(ndim: int, left_right: bool, top_bottom: bool) -> tuple[bool, ...]:
     """Map the two named boundaries onto per-axis flags.
 
@@ -133,18 +144,18 @@ def main() -> None:
     wraps = periodic_flags(
         vapor.ndim - 1, args.left_right_periodic, args.top_bottom_periodic
     )
-    sel = range(args.start, args.stop if args.stop is not None else len(vapor), args.stride)
-    sel = list(sel)
-    print(f"loaded {vapor.shape}, animating {len(sel)} frames")
-
-    def frames_of(indices):
-        for t in indices:
-            yield segment(vapor[t], args.connectivity, args.min_size, wraps)
+    stop = args.stop if args.stop is not None else len(vapor)
+    time_range = list(range(args.start, stop, args.stride))
+    print(f"loaded {vapor.shape}, animating {len(time_range)} frames")
 
     # the audit needs every frame at once; when it is off, stay streaming
-    frames = list(frames_of(sel)) if args.audit else None
+    frames = (
+        segment(vapor[time_range], args.connectivity, args.min_size, wraps)
+        if args.audit
+        else None
+    )
     tracks = link_by_voxel_overlap(
-        frames if frames is not None else frames_of(sel),
+        frames if frames is not None else _stream(vapor[time_range], args),
         min_overlap=args.min_overlap,
         criterion=args.criterion,
         max_distance=args.max_distance,
@@ -165,7 +176,7 @@ def main() -> None:
         for v in bad:
             print(f"  {v}")
             involved = set(v.parents) | set(v.children)
-            for k in range(v.time, min(v.time + args.flag_hold, len(sel))):
+            for k in range(v.time, min(v.time + args.flag_hold, len(time_range))):
                 flagged.setdefault(k, set()).update(involved)
                 alerts.setdefault(k, []).append(
                     f"!! {v.kind} {v.check} {v.ratio:.2f}"
@@ -206,8 +217,8 @@ def main() -> None:
     ax0.set_title("phase mask (vapor)")
     ax1.set_title("bubble id")
 
-    first = segment(vapor[sel[0]], args.connectivity, args.min_size)
-    im0 = ax0.imshow(vapor[sel[0]], origin="lower", cmap="bone", vmin=0, vmax=1,
+    first = segment(vapor[time_range[:1]], args.connectivity, args.min_size, wraps)[0]
+    im0 = ax0.imshow(vapor[time_range[0]], origin="lower", cmap="bone", vmin=0, vmax=1,
                      interpolation="nearest")
     im1 = ax1.imshow(id_colours(tracks.relabel(tracks.ids[0], first.labels)),
                      origin="lower", interpolation="nearest")
@@ -222,9 +233,11 @@ def main() -> None:
     rings: list = []
 
     def draw(i: int):
-        t = sel[i]
-        f = frames[i] if frames is not None else segment(
-            vapor[t], args.connectivity, args.min_size, wraps
+        t = time_range[i]
+        f = (
+            frames[i]
+            if frames is not None
+            else segment(vapor[t : t + 1], args.connectivity, args.min_size, wraps)[0]
         )
         ids = tracks.ids[i]
         im0.set_data(vapor[t])
@@ -256,7 +269,7 @@ def main() -> None:
                                       ha="center", va="center", fontweight="bold"))
         return [im0, im1, stamp, note, alert, *texts]
 
-    anim = FuncAnimation(fig, draw, frames=len(sel), blit=False)
+    anim = FuncAnimation(fig, draw, frames=len(time_range), blit=False)
     writer, out = pick_writer(args.out, args.fps)
     anim.save(out, writer=writer, dpi=args.dpi)
     print(f"wrote {out}")

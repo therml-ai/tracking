@@ -257,6 +257,17 @@ def link_by_voxel_overlap(
     )
 
 
+SEGMENT_CHUNK = 64  # frames labelled at once; caps peak memory on long runs
+
+
+def _stream(masks, connectivity, min_size, periodic) -> Iterator[Frame]:
+    """Segment ``[B, ...]`` a chunk at a time, yielding frames in order."""
+    masks = np.asarray(masks)
+    for start in range(0, len(masks), SEGMENT_CHUNK):
+        chunk = masks[start : start + SEGMENT_CHUNK]
+        yield from segment(chunk, connectivity, min_size, periodic)
+
+
 def track(
     masks: Iterable[np.ndarray],
     connectivity: Connectivity = Connectivity.FACE,
@@ -267,9 +278,11 @@ def track(
     periodic=None,
 ) -> Tracks:
     """Segment and link a sequence of phase masks (True = vapor).
-    ``masks`` is consumed lazily, so only two frames are labelled at a time.
+    ``masks`` is ``[B, (Z,) Y, X]``. It is segmented in chunks and fed to the
+    linker as it goes, so only a slice of the run is labelled at a time --
+    tracking a long sequence does not need every label image resident.
     """
-    frames = (segment(m, connectivity, min_size, periodic) for m in masks)
+    frames = _stream(masks, connectivity, min_size, periodic)
     return link_by_voxel_overlap(
         frames,
         min_overlap=min_overlap,

@@ -158,29 +158,8 @@ def _centroids(labels: np.ndarray, count: int, size: np.ndarray, periodic):
     return out
 
 
-def segment(
-    mask,
-    connectivity: Connectivity = Connectivity.FACE,
-    min_size:int = 0,
-    periodic: Optional[Tuple[int, ...]] = None
-) -> Frame:
-    """Label connected vapor regions in one frame.
-
-    Args:
-        mask: boolean array, True = vapor. 2D ``[Y, X]`` or 3D ``[Z, Y, X]``.
-        connectivity: :class:`Connectivity.FACE` links only face-neighbours,
-            :class:`Connectivity.FULL` also links diagonals.
-        min_size: drop vapor regions smaller than this many voxels. Remaining
-            labels are renumbered to stay contiguous.
-        periodic: one flag per axis, ``True`` where the domain wraps; or a
-            single bool for all axes. For data laid out ``[(Z,) Y, X]``,
-            left-right periodic is the last axis and top-bottom periodic is
-            the one before it. Wrapped regions are fused into a single label
-            and their centroids are computed as a circular mean.
-    """
-    mask = np.asarray(mask, dtype=bool)
-    wraps = as_periodic(periodic, mask.ndim)
-    rank = rank_of_connectivity(as_connectivity(connectivity), mask.ndim)
+def _segment_one(mask: np.ndarray, rank: int, min_size: int, wraps) -> Frame:
+    """Label a single frame. See :func:`segment` for the batched entry point."""
     structure = ndimage.generate_binary_structure(mask.ndim, rank)
     labels, count = ndimage.label(mask, structure=structure)
 
@@ -202,6 +181,44 @@ def segment(
     return Frame(
         labels.astype(np.int32), count, size.astype(np.int64), centroid, wraps
     )
+
+
+def segment(
+    masks, connectivity=Connectivity.FACE, min_size=0, periodic=None
+) -> list[Frame]:
+    """Label connected vapor regions across a batch of frames.
+
+    Args:
+        masks: boolean array ``[B, (Z,) Y, X]``, True = vapor. The batch
+            dimension is required, so a 3D input is read as ``[B, Y, X]``
+            rather than a single 3D frame; pass ``mask[None]`` to segment one
+            frame.
+        connectivity: :class:`Connectivity.FACE` links only face-neighbours,
+            :class:`Connectivity.FULL` also links diagonals. See that enum
+            for what each means per dimension.
+        min_size: drop regions smaller than this many voxels. Remaining
+            labels are renumbered to stay contiguous.
+        periodic: one flag per *spatial* axis, ``True`` where the domain
+            wraps; or a single bool for all of them. For frames laid out
+            ``[(Z,) Y, X]``, left-right periodic is the last axis and
+            top-bottom periodic is the one before it. Wrapped regions are
+            fused into a single label and their centroids are computed as a
+            circular mean.
+
+    Returns:
+        One :class:`Frame` per batch entry, in order.
+    """
+    masks = np.asarray(masks, dtype=bool)
+    if masks.ndim < 3:
+        raise ValueError(
+            f"segment expects [B, (Z,) Y, X] with a batch dimension, got "
+            f"shape {masks.shape}; pass masks[None] for a single frame"
+        )
+
+    spatial = masks.ndim - 1
+    wraps = as_periodic(periodic, spatial)
+    rank = rank_of_connectivity(as_connectivity(connectivity), spatial)
+    return [_segment_one(m, rank, min_size, wraps) for m in masks]
 
 
 def touches_wall(frame: Frame, axis: int = 0, side: int = 0) -> np.ndarray:

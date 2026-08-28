@@ -13,6 +13,11 @@ from track import (
 )
 
 
+def seg(mask, **kw):
+    """Segment one frame. `segment` is batched, so wrap it in a batch of 1."""
+    return segment(np.asarray(mask)[None], **kw)[0]
+
+
 def disc(shape, center, radius):
     idx = np.indices(shape)
     return sum((i - c) ** 2 for i, c in zip(idx, center)) <= radius**2
@@ -22,7 +27,7 @@ def test_segment_counts_and_sizes():
     m = np.zeros((8, 8), bool)
     m[1:3, 1:3] = True
     m[5:8, 4:7] = True
-    f = segment(m)
+    f = seg(m)
     assert f.count == 2
     assert sorted(f.size) == [4, 9]
 
@@ -31,7 +36,7 @@ def test_min_size_drops_and_renumbers():
     m = np.zeros((8, 8), bool)
     m[0, 0] = True  # speck
     m[4:7, 4:7] = True
-    f = segment(m, min_size=2)
+    f = seg(m, min_size=2)
     assert f.count == 1
     assert f.labels.max() == 1  # contiguous after the drop
     assert f.size.tolist() == [9]
@@ -41,8 +46,8 @@ def test_corner_touch_split_by_connectivity():
     m = np.zeros((6, 6), bool)
     m[1:3, 1:3] = True
     m[3:5, 3:5] = True  # touches the first only at a corner
-    assert segment(m, connectivity=Connectivity.FACE).count == 2
-    assert segment(m, connectivity=Connectivity.FULL).count == 1
+    assert seg(m, connectivity=Connectivity.FACE).count == 2
+    assert seg(m, connectivity=Connectivity.FULL).count == 1
 
 
 def test_intersection_is_exact():
@@ -50,7 +55,7 @@ def test_intersection_is_exact():
     a[1:4, 1:4] = True
     b = np.zeros((6, 6), bool)
     b[2:5, 2:5] = True
-    inter = intersection(segment(a), segment(b))
+    inter = intersection(seg(a), seg(b))
     assert inter.shape == (1, 1)
     assert inter[0, 0] == 4  # the 2x2 corner they share
 
@@ -306,8 +311,8 @@ def test_score_dispatches_to_the_named_measure():
     from track import containment, iou, score
 
     shape = (40, 60)
-    a = segment(disc(shape, (20, 20), 8) | disc(shape, (20, 40), 5))
-    b = segment(disc(shape, (20, 30), 14))
+    a = seg(disc(shape, (20, 20), 8) | disc(shape, (20, 40), 5))
+    b = seg(disc(shape, (20, 30), 14))
     assert np.array_equal(score(a, b, Criterion.CONTAINMENT), containment(a, b))
     assert np.array_equal(score(a, b, Criterion.IOU), iou(a, b))
 
@@ -320,7 +325,7 @@ def test_unknown_criterion_names_the_valid_options():
 def test_link_by_voxel_overlap_takes_pre_segmented_frames():
     """The lower-level entry point the scripts use: Frames in, Tracks out."""
     shape = (40, 40)
-    frames = [segment(disc(shape, (20, 8 + t), 6)) for t in range(6)]
+    frames = [seg(disc(shape, (20, 8 + t), 6)) for t in range(6)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert tr.n_tracks == 1
     assert [e.kind for e in tr.events] == [EventKind.CONTINUE] * 5
@@ -376,7 +381,7 @@ def test_volume_consistency_passes_a_clean_merge():
     before = disc(shape, (20, 20), 8) | disc(shape, (20, 40), 5)
     # area-conserving product: sqrt(8**2 + 5**2) keeps the two discs' total
     joined = disc(shape, (20, 30), np.hypot(8, 5))
-    frames = [segment(m) for m in (before, joined)]
+    frames = [seg(m) for m in (before, joined)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert tr.of_kind(EventKind.MERGE)
     assert volume_consistency(tr, frames) == []
@@ -388,7 +393,7 @@ def test_volume_consistency_flags_a_merge_that_invents_vapor():
     shape = (60, 60)
     before = disc(shape, (30, 24), 4) | disc(shape, (30, 36), 4)
     huge = disc(shape, (30, 30), 22)  # far more vapor than the parents held
-    frames = [segment(m) for m in (before, huge)]
+    frames = [seg(m) for m in (before, huge)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     bad = volume_consistency(tr, frames)
     assert [v.check for v in bad] == ["sum_ratio"]
@@ -402,7 +407,7 @@ def test_volume_consistency_bounds_are_configurable():
     shape = (40, 60)
     before = disc(shape, (20, 20), 8) | disc(shape, (20, 40), 5)
     joined = disc(shape, (20, 30), np.hypot(8, 5))
-    frames = [segment(m) for m in (before, joined)]
+    frames = [seg(m) for m in (before, joined)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     # an impossibly tight band must flag the very event the default accepts,
     # once the discretisation allowance is switched off
@@ -413,7 +418,7 @@ def test_attached_by_track_rejects_a_mismatched_sequence():
     from track.audit import attached_by_track
 
     shape = (30, 30)
-    frames = [segment(disc(shape, (15, 15), 5)) for _ in range(3)]
+    frames = [seg(disc(shape, (15, 15), 5)) for _ in range(3)]
     tr = link_by_voxel_overlap(frames)
     with pytest.raises(ValueError, match="same sequence that was linked"):
         attached_by_track(tr, frames[:2])
@@ -433,7 +438,7 @@ def test_volume_ratios_reports_the_continue_control():
     from track import volume_ratios
 
     shape = (40, 40)
-    frames = [segment(disc(shape, (20, 8 + t), 6)) for t in range(5)]
+    frames = [seg(disc(shape, (20, 8 + t), 6)) for t in range(5)]
     tr = link_by_voxel_overlap(frames)
     ratios = volume_ratios(tr)
     assert set(ratios) == {"continue"}
@@ -445,7 +450,7 @@ def test_touches_wall_finds_regions_on_the_heater():
     m = np.zeros((20, 20), bool)
     m[0:3, 2:5] = True  # sitting on the Y=0 wall
     m[10:13, 10:13] = True  # detached
-    f = segment(m)
+    f = seg(m)
     assert f.count == 2
     assert touches_wall(f).tolist() == [True, False]
     assert touches_wall(f, axis=0, side=-1).tolist() == [False, False]
@@ -460,7 +465,7 @@ def test_wall_attached_merges_are_exempt_from_conservation():
     # both parents sit on the wall, and the product balloons
     before = disc(shape, (2, 24), 5) | disc(shape, (2, 36), 5)
     grown = disc(shape, (2, 30), 20)
-    frames = [segment(m) for m in (before, grown)]
+    frames = [seg(m) for m in (before, grown)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert tr.of_kind(EventKind.MERGE)
 
@@ -475,7 +480,7 @@ def test_detached_merges_are_still_checked():
     shape = (60, 60)
     before = disc(shape, (30, 24), 4) | disc(shape, (30, 36), 4)
     huge = disc(shape, (30, 30), 22)
-    frames = [segment(m) for m in (before, huge)]
+    frames = [seg(m) for m in (before, huge)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert volume_consistency(tr, frames)  # nowhere near the wall
 
@@ -487,7 +492,7 @@ def test_wall_side_is_configurable():
     # the same scenario, mirrored onto the far face of axis 0
     before = disc(shape, (57, 24), 5) | disc(shape, (57, 36), 5)
     grown = disc(shape, (57, 30), 20)
-    frames = [segment(m) for m in (before, grown)]
+    frames = [seg(m) for m in (before, grown)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert volume_consistency(tr, frames)  # wall assumed at Y=0, so checked
     assert volume_consistency(tr, frames, wall_side=-1) == []  # heater at Y=-1
@@ -500,7 +505,7 @@ def test_tiny_bubbles_are_below_the_measurable_floor():
     shape = (40, 40)
     before = disc(shape, (20, 18), 1) | disc(shape, (20, 22), 1)  # 5 px each
     after = disc(shape, (20, 20), 3)
-    frames = [segment(m) for m in (before, after)]
+    frames = [seg(m) for m in (before, after)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert tr.of_kind(EventKind.MERGE)
     assert volume_consistency(tr, frames) == []  # skipped by min_volume
@@ -513,7 +518,7 @@ def test_min_volume_does_not_hide_real_errors():
     shape = (60, 60)
     before = disc(shape, (30, 24), 4) | disc(shape, (30, 36), 4)  # ~98 px
     huge = disc(shape, (30, 30), 22)
-    frames = [segment(m) for m in (before, huge)]
+    frames = [seg(m) for m in (before, huge)]
     tr = link_by_voxel_overlap(frames, min_overlap=0.25)
     assert volume_consistency(tr, frames, min_volume=25)
 
@@ -532,7 +537,7 @@ def merging_blocks(side, gain, gap=2):
     before[5 : 5 + side, 5 + side + gap : 5 + 2 * side + gap] = True
     after = np.zeros(shape, bool)
     after[5 : 5 + height, 5 : 5 + width] = True
-    frames = [segment(before), segment(after)]
+    frames = [seg(before), seg(after)]
     assert frames[0].count == 2 and frames[1].count == 1
     return link_by_voxel_overlap(frames, min_overlap=0.25), frames
 
@@ -635,27 +640,27 @@ def band(shape, rows, cols):
 
 def test_left_right_wrap_fuses_one_bubble():
     m = band((20, 20), range(8, 12), [-2, -1, 0, 1])
-    assert segment(m).count == 2  # a box sees two pieces
-    f = segment(m, periodic=(False, True))
+    assert seg(m).count == 2  # a box sees two pieces
+    f = seg(m, periodic=(False, True))
     assert f.count == 1
     assert f.size.tolist() == [16]
 
 
 def test_top_bottom_wrap_fuses_one_bubble():
     m = band((20, 20), [-2, -1, 0, 1], range(8, 12))
-    assert segment(m).count == 2
-    assert segment(m, periodic=(True, False)).count == 1
-    assert segment(m, periodic=(False, True)).count == 2  # wrong axis
+    assert seg(m).count == 2
+    assert seg(m, periodic=(True, False)).count == 1
+    assert seg(m, periodic=(False, True)).count == 2  # wrong axis
 
 
 def test_corner_bubble_wraps_on_both_axes():
     m = band((20, 20), [-1, 0], [-1, 0])
-    assert segment(m).count == 4  # one blob per corner
-    assert segment(m, periodic=True).count == 1
+    assert seg(m).count == 4  # one blob per corner
+    assert seg(m, periodic=True).count == 1
 
 
 def test_periodic_centroid_uses_a_circular_mean():
-    f = segment(band((6, 20), [2, 3], [-2, -1, 0, 1]), periodic=(False, True))
+    f = seg(band((6, 20), [2, 3], [-2, -1, 0, 1]), periodic=(False, True))
     # spans x = 18,19,0,1, so the centre is 19.5, not the domain midpoint
     assert f.centroid[0, 1] == pytest.approx(19.5)
     assert f.centroid[0, 0] == pytest.approx(2.5)  # untouched non-periodic axis
@@ -664,7 +669,7 @@ def test_periodic_centroid_uses_a_circular_mean():
 def test_periodic_centroid_matches_plain_mean_away_from_the_edge():
     m = band((20, 20), range(8, 12), range(8, 12))
     assert np.allclose(
-        segment(m, periodic=True).centroid, segment(m).centroid
+        seg(m, periodic=True).centroid, seg(m).centroid
     )
 
 
@@ -710,7 +715,7 @@ def test_minimum_image_wraps_only_periodic_axes():
 
 
 def test_touches_wall_refuses_a_periodic_axis():
-    f = segment(np.ones((10, 10), bool), periodic=(False, True))
+    f = seg(np.ones((10, 10), bool), periodic=(False, True))
     assert touches_wall(f, axis=0).tolist() == [True]
     with pytest.raises(ValueError, match="axis 1 is periodic"):
         touches_wall(f, axis=1)
@@ -730,8 +735,8 @@ def test_wrap_respects_connectivity():
     m = np.zeros((10, 10), bool)
     m[4, 0] = True
     m[5, 9] = True  # touches the first only diagonally, across the wrap
-    assert segment(m, connectivity=Connectivity.FACE, periodic=(False, True)).count == 2
-    assert segment(m, connectivity=Connectivity.FULL, periodic=(False, True)).count == 1
+    assert seg(m, connectivity=Connectivity.FACE, periodic=(False, True)).count == 2
+    assert seg(m, connectivity=Connectivity.FULL, periodic=(False, True)).count == 1
 
 
 def test_periodic_is_recorded_on_frames_and_tracks():
@@ -763,21 +768,102 @@ def test_connectivity_accepts_member_or_plain_string():
     m = np.zeros((6, 6), bool)
     m[1:3, 1:3] = True
     m[3:5, 3:5] = True  # corner contact only
-    assert segment(m, connectivity="face").count == 2
-    assert segment(m, connectivity=Connectivity.FULL).count == 1
+    assert seg(m, connectivity="face").count == 2
+    assert seg(m, connectivity=Connectivity.FULL).count == 1
 
 
 def test_full_connectivity_reaches_corners_in_3d():
     m = np.zeros((6, 6, 6), bool)
     m[1, 1, 1] = True
     m[2, 2, 2] = True  # touches only through a cube corner
-    assert segment(m, connectivity=Connectivity.FACE).count == 2
-    assert segment(m, connectivity=Connectivity.FULL).count == 1
+    assert seg(m, connectivity=Connectivity.FACE).count == 2
+    assert seg(m, connectivity=Connectivity.FULL).count == 1
 
 
 def test_unknown_connectivity_names_the_valid_options():
     with pytest.raises(ValueError, match="unknown connectivity .*face, full"):
-        segment(np.ones((4, 4), bool), connectivity="diagonal")
+        seg(np.ones((4, 4), bool), connectivity="diagonal")
     # the old integer API is gone, and says so clearly
     with pytest.raises(ValueError, match="unknown connectivity 1"):
-        segment(np.ones((4, 4), bool), connectivity=1)
+        seg(np.ones((4, 4), bool), connectivity=1)
+
+
+def test_connectivity_rank_depends_on_dimension():
+    """FULL means 8-connectivity in 2D but 26-connectivity in 3D."""
+    from track.segment import rank_of_connectivity
+
+    assert rank_of_connectivity(Connectivity.FACE, 2) == 1
+    assert rank_of_connectivity(Connectivity.FACE, 3) == 1
+    assert rank_of_connectivity(Connectivity.FULL, 2) == 2
+    assert rank_of_connectivity(Connectivity.FULL, 3) == 3
+
+
+# --- batched segmentation --------------------------------------------------
+
+
+def test_segment_returns_one_frame_per_batch_entry():
+    batch = np.zeros((3, 20, 20), bool)
+    for b, r in enumerate((2, 3, 4)):
+        batch[b, 5 : 5 + r, 5 : 5 + r] = True
+    frames = segment(batch)
+    assert isinstance(frames, list) and len(frames) == 3
+    assert [f.size.tolist() for f in frames] == [[4], [9], [16]]
+    assert all(f.ndim == 2 for f in frames)
+
+
+def test_segment_rejects_an_unbatched_frame():
+    with pytest.raises(ValueError, match=r"expects \[B, \(Z,\) Y, X\]"):
+        segment(np.zeros((20, 20), bool))
+
+
+def test_three_dimensional_input_is_read_as_a_batch_of_2d():
+    """[B, Y, X], never a single 3D volume."""
+    frames = segment(np.ones((4, 6, 6), bool))
+    assert len(frames) == 4
+    assert frames[0].ndim == 2
+    assert frames[0].size.tolist() == [36]
+
+
+def test_four_dimensional_input_is_a_batch_of_3d_frames():
+    frames = segment(np.ones((2, 5, 6, 7), bool))
+    assert len(frames) == 2
+    assert frames[0].ndim == 3
+    assert frames[0].size.tolist() == [5 * 6 * 7]
+
+
+def test_batched_matches_frame_by_frame():
+    shape = (40, 40)
+    masks = np.stack([disc(shape, (20, 8 + t), 6) for t in range(5)])
+    batched = segment(masks, min_size=3)
+    for i, one in enumerate(batched):
+        alone = seg(masks[i], min_size=3)
+        assert one.count == alone.count
+        assert one.size.tolist() == alone.size.tolist()
+        assert np.allclose(one.centroid, alone.centroid)
+
+
+def test_empty_batch_gives_an_empty_list():
+    assert segment(np.zeros((0, 8, 8), bool)) == []
+
+
+def test_periodic_flags_apply_to_the_spatial_axes_only():
+    """[B, Y, X] takes two flags, not three."""
+    batch = band((20, 20), range(8, 12), [-2, -1, 0, 1])[None]
+    assert segment(batch, periodic=(False, True))[0].count == 1
+    with pytest.raises(ValueError, match="periodic has 3 flags but data is 2D"):
+        segment(batch, periodic=(False, False, True))
+
+
+def test_track_chunking_does_not_change_the_result(monkeypatch):
+    """Chunk size is a memory knob, never a behaviour change."""
+    from track import link as link_mod
+
+    shape = (40, 40)
+    masks = np.stack([disc(shape, (20, 8 + t), 6) for t in range(12)])
+    monkeypatch.setattr(link_mod, "SEGMENT_CHUNK", 100)
+    whole = track(masks, min_overlap=0.25)
+    monkeypatch.setattr(link_mod, "SEGMENT_CHUNK", 3)
+    chunked = track(masks, min_overlap=0.25)
+    assert whole.n_tracks == chunked.n_tracks == 1
+    assert [i.tolist() for i in whole.ids] == [i.tolist() for i in chunked.ids]
+    assert len(chunked.ids) == 12
