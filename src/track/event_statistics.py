@@ -101,6 +101,7 @@ def event_counts(tracks: Tracks, kind: EventKind) -> np.ndarray:
     Several events can share a transition, which is why this counts rather
     than flags. Counts are unitless -- ``timestep`` does not enter here.
     """
+    assert kind in EventKind
     counts = np.zeros(transitions(tracks), dtype=np.int64)
     for event in tracks.events:
         if event.kind is kind and event.time < counts.size:
