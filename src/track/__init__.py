@@ -10,9 +10,16 @@ from .link import (
     track,
 )
 from .overlap import Criterion, containment, intersection, iou, score
-from .segment import Frame, minimum_image, segment, touches_wall
+from .segment import (
+    Connectivity,
+    Frame,
+    minimum_image,
+    segment,
+    touches_wall,
+)
 
 __all__ = [
+    "Connectivity",
     "Criterion",
     "Event",
     "EventKind",

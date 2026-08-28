@@ -19,7 +19,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.animation import FFMpegWriter, FuncAnimation, PillowWriter
 
-from track import Criterion, segment, volume_consistency
+from track import Connectivity, Criterion, segment, volume_consistency
 from track.link import link_by_voxel_overlap
 from track.graph import LINEAGE_KINDS
 from track.palette import colours as id_colours
@@ -88,7 +88,8 @@ def main() -> None:
     p.add_argument("--out", default="bubbles.mp4")
     p.add_argument("--fps", type=int, default=20)
     p.add_argument("--dpi", type=int, default=110)
-    p.add_argument("--connectivity", type=int, default=1)
+    p.add_argument("--connectivity", type=Connectivity, choices=list(Connectivity),
+                   default=Connectivity.FACE)
     p.add_argument("--min-size", type=int, default=4,
                    help="drop regions below this many pixels; keep it small -- "
                         "this discards bubbles outright rather than merging them")

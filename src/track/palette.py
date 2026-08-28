@@ -1,10 +1,10 @@
-"""Stable colours for track ids, shared by the visualisation scripts.
+"""Stable colours for track ids, used by the visualisation scripts.
 """
 
 import numpy as np
 
 # irrational stride round the hue circle: consecutive ids land far apart, and
-# the mapping is stateless, so a track keeps its colour for its whole life
+# the mapping is stateless, so a track id keeps its colour for its whole life
 GOLDEN = 0.6180339887498949
 LIQUID = np.array([0.04, 0.05, 0.10])
 

@@ -1,12 +1,3 @@
-"""The track lineage as a graph: which bubble came from which.
-
-The movie shows where bubbles are; this shows how they are related. Nodes are
-tracks, edges are coalescence and breakup events, and a weakly connected
-component is one family descended from a common ancestor.
-
-``networkx`` is an optional dependency, imported lazily.
-"""
-
 from .link import EventKind, Tracks
 
 #: events that create a parent -> child edge; the rest concern one track only
@@ -51,10 +42,6 @@ def to_networkx(tracks: Tracks):
 
 def write_graphml(graph, path) -> None:
     """Write the lineage graph for Gephi, Cytoscape or igraph.
-
-    The GraphML writer dispatches on ``type(value)`` exactly, so it rejects
-    the :class:`~track.link.EventKind` members even though they are strings.
-    They are flattened on the way out, leaving the in-memory graph untouched.
     """
     nx = _networkx()
     out = graph.copy()

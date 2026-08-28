@@ -20,8 +20,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.lines import Line2D
 
-from track import segment
-from track import EventKind
+from track import Connectivity, segment
+from track import Connectivity, EventKind
 from track.graph import families, to_networkx, write_graphml
 from track.link import link_by_voxel_overlap
 from track.palette import colours
@@ -66,7 +66,8 @@ def main() -> None:
     p.add_argument("--start", type=int, default=0)
     p.add_argument("--stop", type=int, default=None)
     p.add_argument("--out", default="lineage.png")
-    p.add_argument("--connectivity", type=int, default=1)
+    p.add_argument("--connectivity", type=Connectivity, choices=list(Connectivity),
+                   default=Connectivity.FACE)
     p.add_argument("--min-size", type=int, default=4)
     p.add_argument("--left-right-periodic", action="store_true",
                    help="the domain wraps in X; bubbles crossing it stay one bubble")

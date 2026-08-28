@@ -10,17 +10,11 @@ from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
 
 from .overlap import Criterion, score
-from .segment import Frame, minimum_image, segment
+from .segment import Connectivity, Frame, minimum_image, segment
 
 class EventKind(StrEnum):
     """What happened to a bubble between one frame and the next.
-
-    A ``StrEnum``, so members compare equal to their value and format as
-    plain text. Note that libraries dispatching on ``type(value)`` rather
-    than ``isinstance`` still need a real ``str`` -- see
-    :func:`track.graph.write_graphml`.
     """
-
     START = "start"  #: nucleation, or entry into the domain
     END = "end"  #: condensation, or exit from the domain
     CONTINUE = "continue"  #: one bubble, still one bubble
@@ -57,24 +51,14 @@ class Trajectory:
         return int(self.frames.size)
 
     @property
-    def velocity(self) -> np.ndarray:
-        """Centroid displacement per frame, ``[n - 1, ndim]``.
-
-        Displacements across a periodic face are wrapped to the short way
-        round, so a bubble leaving one side and re-entering the other reads
-        as a small step rather than the width of the domain.
-
-        Only meaningful where ``frames`` is contiguous, which it is unless the
-        track vanished and reappeared.
-        """
+    def centroid_displacement(self) -> np.ndarray:
         delta = np.diff(self.centroid, axis=0)
         if any(self.periodic):
             return minimum_image(delta, self.shape, self.periodic)
         return delta
 
     @property
-    def growth(self) -> np.ndarray:
-        """Volume change per frame as a fraction, ``[n - 1]``."""
+    def volume_change(self) -> np.ndarray:
         return np.diff(self.volume) / self.volume[:-1]
 
 
@@ -83,9 +67,7 @@ class Tracks:
     """Per-frame label-to-track mapping, region properties and events.
 
     ``ids``, ``size`` and ``centroid`` share an indexing: entry ``[t][i]``
-    describes label ``i + 1`` of frame ``t``. Keeping the properties here
-    rather than only on the :class:`~track.segment.Frame` means a whole run
-    stays queryable without holding every label image in memory.
+    describes label ``i + 1`` of frame ``t``.
     """
 
     ids: list[np.ndarray]  # ids[t][label - 1] -> track id
@@ -162,13 +144,7 @@ def _augment_by_distance(
 ) -> np.ndarray:
     """Link leftover regions by a global nearest-centroid assignment.
 
-    Overlap fails for bubbles that travel a large fraction of their own
-    radius per frame -- a small bubble simply does not intersect itself
-    between frames, however permissive the threshold. Those regions are
-    matched here instead, by minimising total centroid distance under a
-    ``max_distance`` gate.
-
-    Only regions that overlap *nothing* are eligible, so this can add 1:1
+    Only regions that do NOT overlap are eligible, so this can add 1:1
     continuations but can never disturb a coalescence or breakup already
     found by overlap.
     """
@@ -283,7 +259,7 @@ def link_by_voxel_overlap(
 
 def track(
     masks: Iterable[np.ndarray],
-    connectivity: int = 1,
+    connectivity: Connectivity = Connectivity.FACE,
     min_size: int = 0,
     min_overlap: float = 0.5,
     criterion: Criterion = Criterion.CONTAINMENT,
@@ -291,7 +267,6 @@ def track(
     periodic=None,
 ) -> Tracks:
     """Segment and link a sequence of phase masks (True = vapor).
-
     ``masks`` is consumed lazily, so only two frames are labelled at a time.
     """
     frames = (segment(m, connectivity, min_size, periodic) for m in masks)

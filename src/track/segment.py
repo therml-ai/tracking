@@ -1,12 +1,34 @@
 """Per-frame segmentation of a binary phase mask into labelled bubbles."""
 
 from dataclasses import dataclass
+from enum import StrEnum
 from itertools import product
+from typing import Optional, Tuple
 
 import numpy as np
 from scipy import ndimage
 from scipy.sparse import csr_matrix
 from scipy.sparse.csgraph import connected_components
+
+
+class Connectivity(StrEnum):
+    FACE = "face"
+    FULL = "full"
+
+
+def rank_of_connectivity(connectivity: Connectivity, ndim: int) -> int:
+    return 1 if connectivity is Connectivity.FACE else ndim
+
+
+def as_connectivity(value) -> Connectivity:
+    """Accept a :class:`Connectivity` member or its plain-string value."""
+    try:
+        return Connectivity(value)
+    except ValueError as exc:
+        options = ", ".join(c.value for c in Connectivity)
+        raise ValueError(
+            f"unknown connectivity {value!r}; choose from {options}"
+        ) from exc
 
 
 @dataclass(frozen=True)
@@ -53,8 +75,7 @@ def minimum_image(delta: np.ndarray, shape, periodic) -> np.ndarray:
     """Wrap displacement components onto ``[-L/2, L/2)`` for periodic axes.
 
     A bubble that leaves one side and re-enters the other has moved a short
-    way, not the width of the domain. Everything measuring a separation --
-    linking distances, track velocities -- has to go through this.
+    way, not the width of the domain.
     """
     delta = np.array(delta, dtype=float, copy=True)
     for axis, (length, wrap) in enumerate(zip(shape, periodic)):
@@ -63,7 +84,7 @@ def minimum_image(delta: np.ndarray, shape, periodic) -> np.ndarray:
     return delta
 
 
-def _wrap_labels(labels: np.ndarray, count: int, connectivity: int, periodic):
+def _wrap_labels(labels: np.ndarray, count: int, rank: int, periodic):
     """Fuse labels that meet across a periodic face.
 
     ``ndimage.label`` treats the array as a box, so a bubble straddling a
@@ -73,8 +94,8 @@ def _wrap_labels(labels: np.ndarray, count: int, connectivity: int, periodic):
     edges: list[tuple[int, int]] = []
     ndim = labels.ndim
     # the wrap already uses up one differing coordinate, so the neighbours it
-    # may connect to diagonally are limited by the remaining connectivity
-    free = max(connectivity - 1, 0)
+    # may connect to diagonally are limited by the remaining rank
+    free = max(rank - 1, 0)
 
     for axis, wrap in enumerate(periodic):
         if not wrap or labels.shape[axis] < 2:
@@ -137,16 +158,19 @@ def _centroids(labels: np.ndarray, count: int, size: np.ndarray, periodic):
     return out
 
 
-def segment(mask, connectivity=1, min_size=0, periodic=None) -> Frame:
+def segment(
+    mask,
+    connectivity: Connectivity = Connectivity.FACE,
+    min_size:int = 0,
+    periodic: Optional[Tuple[int, ...]] = None
+) -> Frame:
     """Label connected vapor regions in one frame.
 
     Args:
         mask: boolean array, True = vapor. 2D ``[Y, X]`` or 3D ``[Z, Y, X]``.
-        connectivity: 1 links face-neighbours only (4-conn in 2D, 6-conn in
-            3D); ``mask.ndim`` also links diagonals (8-conn / 26-conn).
-            Face-only is the conservative choice -- full connectivity fuses
-            bubbles that merely touch at a corner.
-        min_size: drop regions smaller than this many voxels. Remaining
+        connectivity: :class:`Connectivity.FACE` links only face-neighbours,
+            :class:`Connectivity.FULL` also links diagonals.
+        min_size: drop vapor regions smaller than this many voxels. Remaining
             labels are renumbered to stay contiguous.
         periodic: one flag per axis, ``True`` where the domain wraps; or a
             single bool for all axes. For data laid out ``[(Z,) Y, X]``,
@@ -156,11 +180,12 @@ def segment(mask, connectivity=1, min_size=0, periodic=None) -> Frame:
     """
     mask = np.asarray(mask, dtype=bool)
     wraps = as_periodic(periodic, mask.ndim)
-    structure = ndimage.generate_binary_structure(mask.ndim, connectivity)
+    rank = rank_of_connectivity(as_connectivity(connectivity), mask.ndim)
+    structure = ndimage.generate_binary_structure(mask.ndim, rank)
     labels, count = ndimage.label(mask, structure=structure)
 
     if any(wraps):
-        labels, count = _wrap_labels(labels, count, connectivity, wraps)
+        labels, count = _wrap_labels(labels, count, rank, wraps)
 
     size = np.bincount(labels.ravel(), minlength=count + 1)[1:]
 
@@ -183,9 +208,7 @@ def touches_wall(frame: Frame, axis: int = 0, side: int = 0) -> np.ndarray:
     """Which regions touch a domain boundary, as a bool array of ``count``.
 
     Defaults to the low face of axis 0, which is the heater in a boiling
-    domain laid out ``[(Z,) Y, X]`` with the wall at ``Y = 0``. A bubble
-    touching it is still attached to the nucleation site and being fed
-    vapor, so it is not conserving volume.
+    domain laid out ``[(Z,) Y, X]`` with the wall at ``Y = 0``.
 
     A periodic face is not a wall; asking about one raises rather than
     silently reporting attachment.

@@ -2,6 +2,7 @@ import numpy as np
 import pytest
 
 from track import (
+    Connectivity,
     Criterion,
     EventKind,
     intersection,
@@ -40,8 +41,8 @@ def test_corner_touch_split_by_connectivity():
     m = np.zeros((6, 6), bool)
     m[1:3, 1:3] = True
     m[3:5, 3:5] = True  # touches the first only at a corner
-    assert segment(m, connectivity=1).count == 2
-    assert segment(m, connectivity=2).count == 1
+    assert segment(m, connectivity=Connectivity.FACE).count == 2
+    assert segment(m, connectivity=Connectivity.FULL).count == 1
 
 
 def test_intersection_is_exact():
@@ -567,8 +568,8 @@ def test_trajectory_records_centroid_and_volume():
     assert len(tj) == 5
     assert tj.frames.tolist() == [0, 1, 2, 3, 4]
     assert tj.volume.tolist() == [36] * 5
-    assert np.allclose(tj.velocity, [[0, 2]] * 4)
-    assert np.allclose(tj.growth, 0.0)
+    assert np.allclose(tj.centroid_displacement, [[0, 2]] * 4)
+    assert np.allclose(tj.volume_change, 0.0)
 
 
 def test_trajectory_follows_a_growing_bubble():
@@ -577,7 +578,7 @@ def test_trajectory_follows_a_growing_bubble():
     tr = track([disc(shape, (30, 30), r) for r in radii])
     tj = tr.trajectory(1)
     assert np.all(np.diff(tj.volume) > 0)
-    assert np.all(tj.growth > 0)
+    assert np.all(tj.volume_change > 0)
     # area of a disc, so volume should track r**2
     assert np.allclose(tj.volume / np.array(radii) ** 2, np.pi, atol=0.4)
 
@@ -689,12 +690,12 @@ def test_distance_stage_measures_the_short_way_round():
     )
 
 
-def test_velocity_wraps_instead_of_jumping_the_domain():
+def test_centroid_displacement_wraps_instead_of_jumping_the_domain():
     masks = [band((20, 20), range(9, 11), range(c, c + 2)) for c in range(17, 22)]
     tj = track(
         masks, min_overlap=0.25, max_distance=6.0, periodic=(False, True)
     ).trajectory(1)
-    vel = tj.velocity
+    vel = tj.centroid_displacement
     assert np.allclose(vel[:, 1], 1.0)  # steady 1 px/frame, no 19 px spike
     assert np.abs(vel).max() < 2
 
@@ -729,8 +730,8 @@ def test_wrap_respects_connectivity():
     m = np.zeros((10, 10), bool)
     m[4, 0] = True
     m[5, 9] = True  # touches the first only diagonally, across the wrap
-    assert segment(m, connectivity=1, periodic=(False, True)).count == 2
-    assert segment(m, connectivity=2, periodic=(False, True)).count == 1
+    assert segment(m, connectivity=Connectivity.FACE, periodic=(False, True)).count == 2
+    assert segment(m, connectivity=Connectivity.FULL, periodic=(False, True)).count == 1
 
 
 def test_periodic_is_recorded_on_frames_and_tracks():
@@ -749,3 +750,34 @@ def test_non_periodic_results_are_unchanged():
     b = track(masks, min_overlap=0.25, max_distance=8.0, periodic=(False, False))
     assert a.n_tracks == b.n_tracks == 1
     assert [i.tolist() for i in a.ids] == [i.tolist() for i in b.ids]
+
+
+def test_connectivity_is_a_string_enum():
+    assert Connectivity.FACE == "face"
+    assert Connectivity("full") is Connectivity.FULL
+    assert [c.value for c in Connectivity] == ["face", "full"]
+
+
+
+def test_connectivity_accepts_member_or_plain_string():
+    m = np.zeros((6, 6), bool)
+    m[1:3, 1:3] = True
+    m[3:5, 3:5] = True  # corner contact only
+    assert segment(m, connectivity="face").count == 2
+    assert segment(m, connectivity=Connectivity.FULL).count == 1
+
+
+def test_full_connectivity_reaches_corners_in_3d():
+    m = np.zeros((6, 6, 6), bool)
+    m[1, 1, 1] = True
+    m[2, 2, 2] = True  # touches only through a cube corner
+    assert segment(m, connectivity=Connectivity.FACE).count == 2
+    assert segment(m, connectivity=Connectivity.FULL).count == 1
+
+
+def test_unknown_connectivity_names_the_valid_options():
+    with pytest.raises(ValueError, match="unknown connectivity .*face, full"):
+        segment(np.ones((4, 4), bool), connectivity="diagonal")
+    # the old integer API is gone, and says so clearly
+    with pytest.raises(ValueError, match="unknown connectivity 1"):
+        segment(np.ones((4, 4), bool), connectivity=1)

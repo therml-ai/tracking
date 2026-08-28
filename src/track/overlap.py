@@ -1,5 +1,3 @@
-"""Voxel-overlap matching between two labelled frames."""
-
 from enum import StrEnum
 
 import numpy as np
